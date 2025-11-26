@@ -174,4 +174,65 @@ router.patch("/:id/status", auth, async (req, res) => {
   }
 });
 
-module.exports = router;
+
+// GET /api/appointments/employee/schedule
+// - employee sees their own schedule
+// - admin may pass ?employee=<id> to view a specific employee
+// - optional ?from=YYYY-MM-DD or full ISO, ?to=...
+// GET /api/appointments/employee/schedule
+// - employee sees their own schedule
+// - admin may pass ?employee=<id> to view a specific employee
+// - optional ?from=YYYY-MM-DD or full ISO, ?to=...
+router.get("/employee/schedule", auth, async (req, res) => {
+  try {
+    // determine which employee to look up
+    let employeeId;
+    if (req.user.role === "employee") {
+      employeeId = req.user.id; // employee sees own schedule
+    } else if (req.user.role === "admin") {
+      employeeId = req.query.employee; // admin can pass employee id
+      if (!employeeId) return res.status(400).json({ ok: false, msg: "admin must provide ?employee=<id>" });
+    } else {
+      // regular users cannot access this endpoint
+      return res.status(403).json({ ok: false, msg: "forbidden: employees only" });
+    }
+
+    // parse date window
+    const now = new Date();
+    const from = req.query.from ? new Date(req.query.from) : new Date(now.setHours(0, 0, 0, 0));
+    // default to 7 days after `from` if `to` not provided
+    const to = req.query.to ? new Date(req.query.to) : new Date(from.getTime() + 7 * 24 * 60 * 60 * 1000);
+
+    if (isNaN(from) || isNaN(to)) return res.status(400).json({ ok: false, msg: "invalid from/to date" });
+
+    // find scheduled appointments in window for that employee
+    const appts = await Appointment.find({
+      employee: employeeId,
+      datetime: { $gte: from, $lte: to }
+    })
+      .populate("user", "name email")
+      .populate("employee", "name email")
+      .sort({ datetime: 1 });
+
+    // group by YYYY-MM-DD (UTC ISO date)
+    const grouped = {};
+    for (const a of appts) {
+      // use ISO date (YYYY-MM-DD) so frontend can render per-day easily
+      const day = a.datetime.toISOString().split("T")[0];
+      if (!grouped[day]) grouped[day] = [];
+      grouped[day].push(a);
+    }
+
+    // produce sorted keys for convenience
+    const days = Object.keys(grouped).sort();
+    const result = {};
+    for (const d of days) result[d] = grouped[d];
+
+    return res.json({ ok: true, employeeId, from: from.toISOString(), to: to.toISOString(), schedule: result });
+  } catch (err) {
+    console.error("employee schedule err:", err);
+    return res.status(500).json({ ok: false, msg: "server error" });
+  }
+});
+
+module.exports = router
