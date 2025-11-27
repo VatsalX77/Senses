@@ -16,16 +16,42 @@ const overlaps = (aStart, aDuration, bStart, bDuration) => {
 /**
  * POST /api/appointments
  * body: { employee, datetime (ISO string), durationMins, reason }
+ * 
+ * Permissions:
+ * -user: create appointment for themselves
+ * -admin: create appointment on behalf of any user
+ * -offline: crate appointment on behalf of any user
+ * -employee: cannot create appointments
  * any authenticated user can create an appointment (role=user or admin)
  */
+// POST /api/appointments
+// body: { employee, datetime, durationMins, reason, user }
+// - normal user: creates for themselves
+// - admin/offline: can create for any user (pass user in body)
 router.post("/", auth, async (req, res) => {
   try {
-    const { employee, datetime, durationMins = 30, reason } = req.body;
+    const { employee, datetime, durationMins = 30, reason, user } = req.body;
     if (!employee || !datetime) {
       return res.status(400).json({ ok: false, msg: "employee and datetime required" });
     }
 
-    // ensure employee exists and has role employee (light check)
+    // who is the patient?
+    // - for normal user → themselves
+    // - for admin/offline → body.user if provided, else themselves
+    let userId = req.user.id;
+    const isAdminLike = req.user.role === "admin" || req.user.role === "offline";
+
+    if (isAdminLike && user) {
+      userId = user;
+
+      // optional: ensure patient exists
+      const patient = await User.findById(userId);
+      if (!patient) {
+        return res.status(400).json({ ok: false, msg: "patient user not found" });
+      }
+    }
+
+    // ensure employee is valid employee
     const employeeUser = await User.findById(employee);
     if (!employeeUser || employeeUser.role !== "employee") {
       return res.status(400).json({ ok: false, msg: "employee not found or not an employee" });
@@ -34,9 +60,9 @@ router.post("/", auth, async (req, res) => {
     const start = new Date(datetime);
     if (isNaN(start)) return res.status(400).json({ ok: false, msg: "invalid datetime" });
 
-    // Basic overlap check: find existing appointments for that employee around that time
-    const windowStart = new Date(start.getTime() - 1000 * 60 * 60); // 1 hour before
-    const windowEnd = new Date(start.getTime() + 1000 * 60 * 60); // 1 hour after
+    // overlap check (basic)
+    const windowStart = new Date(start.getTime() - 1000 * 60 * 60);
+    const windowEnd = new Date(start.getTime() + 1000 * 60 * 60);
 
     const nearby = await Appointment.find({
       employee,
@@ -51,7 +77,7 @@ router.post("/", auth, async (req, res) => {
     }
 
     const appt = new Appointment({
-      user: req.user.id,
+      user: userId,
       employee,
       datetime: start,
       durationMins,
@@ -66,6 +92,7 @@ router.post("/", auth, async (req, res) => {
   }
 });
 
+
 /**
  * GET /api/appointments
  * - admin => all appointments
@@ -79,8 +106,9 @@ router.get("/", auth, async (req, res) => {
     const q = {};
 
     if (status) q.status = status;
+    const role = req.user.role;
 
-    if (req.user.role === "admin") {
+    if (role === "admin" || role === "offline") {
       // no extra filter
     } else if (req.user.role === "employee") {
       q.employee = req.user.id;
@@ -111,7 +139,9 @@ router.get("/:id", auth, async (req, res) => {
 
     const isOwner = appt.user._id.toString() === req.user.id;
     const isEmployee = appt.employee._id.toString() === req.user.id;
-    if (!(req.user.role === "admin" || isOwner || isEmployee)) {
+    const isAdminLike = req.user.role === 'admin' || req.user.role === 'offline';
+
+    if (!(isAdminLike || isOwner || isEmployee)) {
       return res.status(403).json({ ok: false, msg: "forbidden" });
     }
 
@@ -132,8 +162,10 @@ router.patch("/:id/cancel", auth, async (req, res) => {
     if (!appt) return res.status(404).json({ ok: false, msg: "appointment not found" });
 
     const isOwner = appt.user.toString() === req.user.id;
-    if (!(req.user.role === "admin" || isOwner)) {
-      return res.status(403).json({ ok: false, msg: "only owner or admin can cancel" });
+    const isAdminLike = req.user.role === 'admin' || req.user.role === 'offline'
+
+    if (!(isAdminLike|| isOwner)) {
+      return res.status(403).json({ ok: false, msg: "only owner, admin or offline can cancel" });
     }
 
     appt.status = "cancelled";
@@ -161,8 +193,10 @@ router.patch("/:id/status", auth, async (req, res) => {
     if (!appt) return res.status(404).json({ ok: false, msg: "appointment not found" });
 
     const isEmployee = appt.employee.toString() === req.user.id;
-    if (!(req.user.role === "admin" || isEmployee)) {
-      return res.status(403).json({ ok: false, msg: "only assigned employee or admin can change status" });
+    const isAdminLike = req.user.role === 'admin' || req.user.role === 'offline';
+
+    if (!(isAdminLike || isEmployee)) {
+      return res.status(403).json({ ok: false, msg: "only assigned employee, admin or offline can change status" });
     }
 
     appt.status = status;
@@ -182,11 +216,13 @@ router.get("/employee/schedule", auth, async (req, res) => {
   try {
     // determine which employee to look up
     let employeeId;
-    if (req.user.role === "employee") {
+    let role = req.user.role;
+
+    if (role === "employee") {
       employeeId = req.user.id; // employee sees own schedule
-    } else if (req.user.role === "admin") {
+    } else if (req.user.role === "admin" || role === "offline") {
       employeeId = req.query.employee; // admin can pass employee id
-      if (!employeeId) return res.status(400).json({ ok: false, msg: "admin must provide ?employee=<id>" });
+      if (!employeeId) return res.status(400).json({ ok: false, msg: "admin/offline must provide ?employee=<id>" });
     } else {
       // regular users cannot access this endpoint
       return res.status(403).json({ ok: false, msg: "forbidden: employees only" });
@@ -241,15 +277,17 @@ router.put("/:id", auth, async (req, res) => {
     if (!appt) return res.status(404).json({ ok: false, msg: "appointment not found" });
 
     const isOwner = appt.user.toString() === req.user.id;
-    if (!(req.user.role === "admin" || isOwner)) {
-      return res.status(403).json({ ok: false, msg: "only owner or admin can update" });
+    const isAdminLike = req.uesr.role === 'admin' || req.user.role === 'offline';
+
+    if (!(isAdminLike || isOwner)) {
+      return res.status(403).json({ ok: false, msg: "only owner, offline or admin can update" });
     }
 
     const { datetime, durationMins, reason, employee } = req.body;
 
-    if (employee && req.user.role !== "admin") {
+    if (employee && !(req.user.role === 'admin' || req.user.role === 'offline')) {
       // only admin may reassign employee
-      return res.status(403).json({ ok: false, msg: "only admin can change employee" });
+      return res.status(403).json({ ok: false, msg: "only admin or offline change employee" });
     }
 
     if (datetime) {
@@ -273,7 +311,7 @@ router.put("/:id", auth, async (req, res) => {
 
 // DELETE /api/appointments/:id
 // Delete appointments(admin only)
-router.delete("/:id", auth, requireRole("admin"), async (req, res) => {
+router.delete("/:id", auth, requireRole("admin","offline"), async (req, res) => {
   try {
     const appt = await Appointment.findByIdAndDelete(req.params.id);
     if (!appt) return res.status(404).json({ ok: false, msg: "appointment not found" });
