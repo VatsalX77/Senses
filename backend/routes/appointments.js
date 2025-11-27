@@ -174,11 +174,6 @@ router.patch("/:id/status", auth, async (req, res) => {
   }
 });
 
-
-// GET /api/appointments/employee/schedule
-// - employee sees their own schedule
-// - admin may pass ?employee=<id> to view a specific employee
-// - optional ?from=YYYY-MM-DD or full ISO, ?to=...
 // GET /api/appointments/employee/schedule
 // - employee sees their own schedule
 // - admin may pass ?employee=<id> to view a specific employee
@@ -231,6 +226,60 @@ router.get("/employee/schedule", auth, async (req, res) => {
     return res.json({ ok: true, employeeId, from: from.toISOString(), to: to.toISOString(), schedule: result });
   } catch (err) {
     console.error("employee schedule err:", err);
+    return res.status(500).json({ ok: false, msg: "server error" });
+  }
+});
+
+/**
+ * PUT /api/appointments/:id
+ * Update appointment fields (owner or admin)
+ * body: { datetime, durationMins, reason, employee }  -- employee change allowed only by admin
+ */
+router.put("/:id", auth, async (req, res) => {
+  try {
+    const appt = await Appointment.findById(req.params.id);
+    if (!appt) return res.status(404).json({ ok: false, msg: "appointment not found" });
+
+    const isOwner = appt.user.toString() === req.user.id;
+    if (!(req.user.role === "admin" || isOwner)) {
+      return res.status(403).json({ ok: false, msg: "only owner or admin can update" });
+    }
+
+    const { datetime, durationMins, reason, employee } = req.body;
+
+    if (employee && req.user.role !== "admin") {
+      // only admin may reassign employee
+      return res.status(403).json({ ok: false, msg: "only admin can change employee" });
+    }
+
+    if (datetime) {
+      const dt = new Date(datetime);
+      if (isNaN(dt)) return res.status(400).json({ ok: false, msg: "invalid datetime" });
+      appt.datetime = dt;
+    }
+
+    if (durationMins) appt.durationMins = durationMins;
+    if (reason !== undefined) appt.reason = reason;
+    if (employee) appt.employee = employee;
+
+    await appt.save();
+    const updated = await Appointment.findById(appt._id).populate("user", "name email").populate("employee", "name email");
+    return res.json({ ok: true, appointment: updated });
+  } catch (err) {
+    console.error("update appointment err:", err);
+    return res.status(500).json({ ok: false, msg: "server error" });
+  }
+});
+
+// DELETE /api/appointments/:id
+// Delete appointments(admin only)
+router.delete("/:id", auth, requireRole("admin"), async (req, res) => {
+  try {
+    const appt = await Appointment.findByIdAndDelete(req.params.id);
+    if (!appt) return res.status(404).json({ ok: false, msg: "appointment not found" });
+    return res.json({ ok: true, msg: "appointment deleted", appointment: appt });
+  } catch (err) {
+    console.error("delete appointment err:", err);
     return res.status(500).json({ ok: false, msg: "server error" });
   }
 });

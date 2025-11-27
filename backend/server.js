@@ -19,6 +19,8 @@ app.use((req, res, next) => {
 // Mount routes (make sure these files exist)
 app.use("/api/auth", require("./routes/auth"));
 app.use("/api/appointments", require("./routes/appointments"));
+app.use("/api/admin", require("./routes/admin"));
+app.use("/api/users", require("./routes/users"));
 
 // Health check
 app.get("/health", (req, res) => {
