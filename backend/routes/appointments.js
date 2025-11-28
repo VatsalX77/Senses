@@ -5,6 +5,7 @@ const Appointment = require("../models/Appointment");
 const User = require("../models/User");
 const auth = require("../middleware/auth");
 const requireRole = require("../middleware/role");
+const Therapy = require("../models/Therapy");
 
 // Helper: simple overlap check
 const overlaps = (aStart, aDuration, bStart, bDuration) => {
@@ -30,7 +31,7 @@ const overlaps = (aStart, aDuration, bStart, bDuration) => {
 // - admin/offline: can create for any user (pass user in body)
 router.post("/", auth, async (req, res) => {
   try {
-    const { employee, datetime, durationMins = 30, reason, user } = req.body;
+    const { employee, datetime, durationMins: durationFromBody, reason, user: userFromBody, therapy: therapyId } = req.body;
     if (!employee || !datetime) {
       return res.status(400).json({ ok: false, msg: "employee and datetime required" });
     }
@@ -40,19 +41,14 @@ router.post("/", auth, async (req, res) => {
     // - for admin/offline → body.user if provided, else themselves
     let userId = req.user.id;
     const isAdminLike = req.user.role === "admin" || req.user.role === "offline";
-
-    if (isAdminLike && user) {
-      userId = user;
-
-      // optional: ensure patient exists
+    if (isAdminLike && userFromBody) {
+      userId = userFromBody;
       const patient = await User.findById(userId);
-      if (!patient) {
-        return res.status(400).json({ ok: false, msg: "patient user not found" });
-      }
+      if (!patient) return res.status(400).json({ ok: false, msg: "patient user not found" });
     }
 
     // ensure employee is valid employee
-    const employeeUser = await User.findById(employee);
+    const employeeUser = await User.findById(employee).lean();
     if (!employeeUser || employeeUser.role !== "employee") {
       return res.status(400).json({ ok: false, msg: "employee not found or not an employee" });
     }
@@ -60,9 +56,36 @@ router.post("/", auth, async (req, res) => {
     const start = new Date(datetime);
     if (isNaN(start)) return res.status(400).json({ ok: false, msg: "invalid datetime" });
 
-    // overlap check (basic)
-    const windowStart = new Date(start.getTime() - 1000 * 60 * 60);
-    const windowEnd = new Date(start.getTime() + 1000 * 60 * 60);
+    // inintial chosen duration(perfrer body, else fallback to 30)
+    let chosenDuration = typeof durationFromBody === "number" ? durationFromBody : (employeeUser.defaultDurationMins || 30);
+    let chosenPrice = null;
+
+
+    // If therapy provded -> resolve therapy, price and duration
+ if (therapyId) {
+      const therapy = await Therapy.findById(therapyId).lean();
+      if (!therapy) return res.status(400).json({ ok: false, msg: "therapy not found" });
+
+      // find service offerred by employee(employeeUser.service may be array of subdocs)
+      const service = (employeeUser.services || []).find(s => s.therapy.toString() === therapyId.toString());
+  if (service) {
+        chosenPrice = service.price;
+        chosenDuration = service.durationMins || therapy.defaultDurationMins || chosenDuration;
+      } else {
+        // employee does not offer this therapy
+        if (isAdminLike) {
+          // allow admin/offline to book and use therapy defaults
+          chosenPrice = therapy.defaultPrice || null;
+          chosenDuration = therapy.defaultDurationMins || chosenDuration;
+        } else {
+          // normal users cannot book therapies the employee doesn't offer
+          return res.status(400).json({ ok: false, msg: "employee does not offer this therapy" });
+        }
+      }
+    }
+
+     const windowStart = new Date(start.getTime() - 1000 * 60 * 60); // 1 hour before window
+    const windowEnd = new Date(start.getTime() + 1000 * 60 * 60);   // 1 hour after window
 
     const nearby = await Appointment.find({
       employee,
@@ -70,22 +93,38 @@ router.post("/", auth, async (req, res) => {
       status: "scheduled"
     });
 
+    const overlaps = (aStart, aDuration, bStart, bDuration) => {
+      const aEnd = new Date(aStart.getTime() + aDuration * 60000);
+      const bEnd = new Date(bStart.getTime() + bDuration * 60000);
+      return aStart < bEnd && bStart < aEnd;
+    };
+
     for (const ap of nearby) {
-      if (overlaps(start, durationMins, ap.datetime, ap.durationMins)) {
+      if (overlaps(start, chosenDuration, ap.datetime, ap.durationMins)) {
         return res.status(409).json({ ok: false, msg: "Time slot unavailable for this employee" });
       }
     }
 
+    // create appointment with therapy & price recorded
     const appt = new Appointment({
       user: userId,
       employee,
       datetime: start,
-      durationMins,
-      reason
+      durationMins: chosenDuration,
+      reason,
+      therapy: therapyId || null,
+      price: chosenPrice
     });
 
     await appt.save();
-    return res.status(201).json({ ok: true, appointment: appt });
+
+    // populate the response minimally (optional)
+    const created = await Appointment.findById(appt._id)
+      .populate("user", "name email")
+      .populate("employee", "name email")
+      .populate("therapy");
+
+    return res.status(201).json({ ok: true, appointment: created });
   } catch (err) {
     console.error("create appointment err:", err);
     return res.status(500).json({ ok: false, msg: "server error" });
@@ -120,7 +159,7 @@ router.get("/", auth, async (req, res) => {
     if (from) q.datetime.$gte = new Date(from);
     if (to) q.datetime.$lte = new Date(to);
 
-    const list = await Appointment.find(q).populate("user", "name email role").populate("employee", "name email role").sort({ datetime: 1 });
+    const list = await Appointment.find(q).populate("user", "name email role").populate("employee", "name email role").populate("therapy").sort({ datetime: 1 });
     return res.json({ ok: true, appointments: list });
   } catch (err) {
     console.error("list appts err:", err);
@@ -134,7 +173,7 @@ router.get("/", auth, async (req, res) => {
  */
 router.get("/:id", auth, async (req, res) => {
   try {
-    const appt = await Appointment.findById(req.params.id).populate("user", "name email role").populate("employee", "name email role");
+    const appt = await Appointment.findById(req.params.id).populate("user", "name email role").populate("employee", "name email role").populate("therapy");
     if (!appt) return res.status(404).json({ ok: false, msg: "appointment not found" });
 
     const isOwner = appt.user._id.toString() === req.user.id;

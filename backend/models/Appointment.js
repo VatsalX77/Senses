@@ -12,7 +12,9 @@ const appointmentSchema = new mongoose.Schema({
     enum: ["scheduled", "completed", "cancelled"],
     default: "scheduled"
   },
-  createdAt: { type: Date, default: Date.now }
+  createdAt: { type: Date, default: Date.now },
+  therapy: { type: mongoose.Schema.Types.ObjectId, ref: "Therapy"},
+  price: { type: Number},
 });
 
 // optional: prevent double-booking quick check (not enforced by DB)
