@@ -2,6 +2,7 @@
 const mongoose = require("mongoose");
 
 const userSchema = new mongoose.Schema({
+  clinic: { type: mongoose.Schema.Types.ObjectId, ref: "Clinic", default: null},
   profilePic: { type: String, default: null}, //URL or Path to image
   certifications: [
     {
