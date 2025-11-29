@@ -3,6 +3,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const connectDB = require("./config/db")
+const path = require("path")
 
 const app = express();
 
@@ -23,6 +24,8 @@ app.use("/api/admin", require("./routes/admin"));
 app.use("/api/users", require("./routes/users"));
 app.use("/api/therapies", require("./routes/therapies"));
 app.use("/api/employee-services", require("./routes/employeeServices"));
+app.use("/uploads", express.static(path.join(__dirname, 'uploads')));
+app.use("/api/employee-media", require("./routes/employeeMedia"));
 
 // Health check
 app.get("/health", (req, res) => {
