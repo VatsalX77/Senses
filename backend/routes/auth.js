@@ -59,4 +59,52 @@ router.get("/me", auth, async (req, res) => {
   return res.json({ ok: true, user: req.user });
 });
 
+
+router.patch("/me", auth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { name, email, phone, password } = req.body;
+
+    // collect updates
+    const updates = {};
+    if (typeof name === "string" && name.trim().length) updates.name = name.trim();
+    if (typeof email === "string" && email.trim()) updates.email = email.trim().toLowerCase();
+    if (typeof phone === "string" && phone.trim()) updates.phone = phone.trim();
+
+    // If changing email, ensure it's not already used by another user
+    if (updates.email) {
+      const existing = await User.findOne({ email: updates.email, _id: { $ne: userId } });
+      if (existing) return res.status(400).json({ ok: false, msg: "email already in use" });
+    }
+
+    // If changing password, hash it
+    if (password) {
+      if (typeof password !== "string" || password.length < 6) {
+        return res.status(400).json({ ok: false, msg: "password must be at least 6 characters" });
+      }
+      const salt = await bcrypt.genSalt(10);
+      updates.password = await bcrypt.hash(password, salt);
+    }
+
+    // Apply updates and return new object (exclude password)
+    const updated = await User.findByIdAndUpdate(userId, { $set: updates }, { new: true }).select("-password");
+
+    if (!updated) return res.status(404).json({ ok: false, msg: "user not found" });
+
+    // Issue a refreshed token (optional but convenient if email changed)
+    const payload = { userId: updated._id, role: updated.role };
+    const token = jwt.sign(payload, process.env.JWT_SECRET || "devsecret", { expiresIn: "7d" });
+
+    return res.json({ ok: true, msg: "profile updated", user: updated, token });
+  } catch (err) {
+    console.error("update profile err:", err);
+    // duplicate key error (race)
+    if (err.code === 11000) return res.status(400).json({ ok: false, msg: "email already in use" });
+    return res.status(500).json({ ok: false, msg: "server error" });
+  }
+});
+
+
+
+
 module.exports = router;

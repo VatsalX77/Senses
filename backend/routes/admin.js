@@ -143,4 +143,88 @@ router.get("/appointments-per-employee", async (req, res) => {
   }
 });
 
+
+// GET /api/admin/revenue/today
+// returns revenue summery for today
+// -total revnue
+// revenueByTherapy[]
+// total Appointments Today
+// completed count
+// scheduled count
+router.get("/revenue/today", async (req, res) => {
+  try {
+    const now = new Date();
+
+    // Start & end of today (local timezone)
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+    const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+
+    // Only count completed or scheduled for revenue?
+    // *** Typically revenue counts "completed" only ***
+    // But we can include "scheduled" too if your clinic charges upfront.
+    // For now: COMPLETED **only**.
+    const matchStage = {
+      datetime: { $gte: startOfDay, $lte: endOfDay },
+      status: "completed"
+    };
+
+    const agg = await Appointment.aggregate([
+      { $match: matchStage },
+      {
+        $lookup: {
+          from: "therapies",
+          localField: "therapy",
+          foreignField: "_id",
+          as: "therapyData"
+        }
+      },
+      { $unwind: { path: "$therapyData", preserveNullAndEmptyArrays: true } },
+      {
+        $group: {
+          _id: "$therapy",                     // therapyId
+          therapyName: { $first: "$therapyData.name" },
+          totalRevenue: { $sum: "$price" },
+          count: { $sum: 1 },
+          avgPrice: { $avg: "$price" }
+        }
+      },
+      { $sort: { totalRevenue: -1 } }
+    ]);
+
+    // compute overall revenue
+    const totalRevenue = agg.reduce((sum, t) => sum + (t.totalRevenue || 0), 0);
+
+    // additional counts for dashboard metrics
+    const allAppointmentsToday = await Appointment.countDocuments({
+      datetime: { $gte: startOfDay, $lte: endOfDay }
+    });
+
+    const completedCount = await Appointment.countDocuments({
+      datetime: { $gte: startOfDay, $lte: endOfDay },
+      status: "completed"
+    });
+
+    const scheduledCount = await Appointment.countDocuments({
+      datetime: { $gte: startOfDay, $lte: endOfDay },
+      status: "scheduled"
+    });
+
+    return res.json({
+      ok: true,
+      date: startOfDay.toISOString().split("T")[0],
+      totalRevenue,
+      revenueByTherapy: agg,
+      totalAppointmentsToday: allAppointmentsToday,
+      completedCount,
+      scheduledCount
+    });
+
+  } catch (err) {
+    console.error("revenue today error:", err);
+    return res.status(500).json({ ok: false, msg: "server error" });
+  }
+});
+
+
 module.exports = router;
+ 
