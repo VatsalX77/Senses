@@ -27,6 +27,7 @@ app.use("/api/employee-services", require("./routes/employeeServices"));
 app.use("/uploads", express.static(path.join(__dirname, 'uploads')));
 app.use("/api/employee-media", require("./routes/employeeMedia"));
 app.use("/api/clinics", require("./routes/clinics"));
+app.use("/api/calendar", require("./routes/calandar"));
 
 // Health check
 app.get("/health", (req, res) => {
