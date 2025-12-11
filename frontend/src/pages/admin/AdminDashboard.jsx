@@ -1,0 +1,11 @@
+import React from "react";
+
+function AdminDashboard() {
+  return (
+    <div className="min-h-screen flex items-center justify-center">
+      <h1 className="text-2xl font-semibold">Admin Dashboard (placeholder)</h1>
+    </div>
+  );
+}
+
+export default AdminDashboard;
